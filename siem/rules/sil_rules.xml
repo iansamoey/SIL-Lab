@@ -1,0 +1,231 @@
+<!--
+  SIL custom detection rules (IDs 100100-100599), Section 1B Q3.
+
+  Counting (correlation) rules, calibrated against Wazuh 4.14.8 with controlled tests:
+  * A rule with frequency="N" fires on the Nth matching event within the timeframe.
+  * Once it fires, Wazuh reports each further matching event under the correlation rule
+    instead of its own rule. The correlation description therefore includes the
+    triggering reason, and alerts with a mandatory, distinct playbook (credential
+    exposure, 100102) are kept out of any correlation group so they can never be absorbed.
+  * No ignore="..." windows: tested, ignore silences a rule for ALL sources, so a second
+    offender inside the window would raise no correlation alert at all. Repeat alerts are
+    deduplicated downstream (dashboard / alert management, grouped by source) instead.
+-->
+
+<!-- ======================= AI gateway (ai-guard audit log) ======================= -->
+<group name="sil,ai_gateway,">
+  <rule id="100100" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="event">^ai_request$</field>
+    <description>SIL AI gateway: request processed</description>
+  </rule>
+
+  <rule id="100101" level="10">
+    <if_sid>100100</if_sid>
+    <field name="reason">^PHI_DETECTED$</field>
+    <description>AI gateway blocked PHI from leaving the network (client: $(client_id))</description>
+    <group>sil_ai_policy,hipaa_164.312.e.1,gdpr_IV_32.2,</group>
+  </rule>
+
+  <rule id="100102" level="12">
+    <if_sid>100100</if_sid>
+    <field name="reason">^SECRET_DETECTED$</field>
+    <description>Credential sent to AI gateway by $(client_id): treat as exposed, rotate it and follow Duty to Report</description>
+    <mitre><id>T1552</id></mitre>
+    <!-- Deliberately NOT in sil_ai_policy: when a correlation rule fires, Wazuh reports the
+         event under the correlation rule instead of its own. An alert with a mandatory,
+         distinct playbook (rotate now, Duty to Report) must never be absorbed that way. -->
+    <group>sil_ai_secret,</group>
+  </rule>
+
+  <rule id="100103" level="10">
+    <if_sid>100100</if_sid>
+    <field name="reason">^PROMPT_INJECTION$</field>
+    <description>Prompt injection attempt blocked at AI gateway (client: $(client_id))</description>
+    <group>sil_ai_policy,</group>
+  </rule>
+
+  <rule id="100104" level="12">
+    <if_sid>100100</if_sid>
+    <field name="reason">^SYSTEM_PROMPT_LEAK$</field>
+    <description>LLM response withheld: system prompt leak means an injection bypassed input guardrails</description>
+    <group>sil_ai_policy,</group>
+  </rule>
+
+  <rule id="100105" level="13" frequency="4" timeframe="600">
+    <if_matched_group>sil_ai_policy</if_matched_group>
+    <same_field>client_id</same_field>
+    <description>4+ AI policy violations from $(client_id) within 10 minutes (latest: $(reason)): investigate the tool and its users</description>
+  </rule>
+</group>
+
+<!-- ============== API gateway (Kong access log, the onboarded source) ============== -->
+<group name="sil,api_gateway,">
+  <rule id="100200" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="workspace_name">^default$</field>
+    <description>SIL API gateway: request logged</description>
+  </rule>
+
+  <rule id="100201" level="5">
+    <if_sid>100200</if_sid>
+    <field name="response.status">^401$</field>
+    <description>API gateway: authentication failure from $(client_ip)</description>
+    <group>authentication_failed,</group>
+  </rule>
+
+  <rule id="100202" level="10" frequency="10" timeframe="60">
+    <if_matched_sid>100201</if_matched_sid>
+    <same_field>client_ip</same_field>
+    <description>API gateway: 10+ authentication failures from $(client_ip) in 60s (token brute force or credential stuffing)</description>
+    <mitre><id>T1110</id></mitre>
+    <group>authentication_failures,</group>
+  </rule>
+
+  <rule id="100203" level="5">
+    <if_sid>100200</if_sid>
+    <field name="response.status">^403$</field>
+    <description>API gateway: $(consumer.username) denied access to $(request.uri)</description>
+  </rule>
+
+  <rule id="100204" level="10" frequency="5" timeframe="120">
+    <if_matched_sid>100203</if_matched_sid>
+    <same_field>consumer.username</same_field>
+    <description>API gateway: $(consumer.username) repeatedly probing endpoints outside its permissions</description>
+    <mitre><id>T1083</id></mitre>
+  </rule>
+
+  <rule id="100205" level="4">
+    <if_sid>100200</if_sid>
+    <field name="response.status">^429$</field>
+    <description>API gateway: $(consumer.username) rate limited</description>
+  </rule>
+
+  <rule id="100206" level="8" frequency="20" timeframe="60">
+    <if_matched_sid>100205</if_matched_sid>
+    <same_field>consumer.username</same_field>
+    <description>API gateway: sustained rate limiting of $(consumer.username) (scraping, abuse or a broken integration)</description>
+    <mitre><id>T1499</id></mitre>
+  </rule>
+</group>
+
+<!-- ======================= WAF (ModSecurity audit log) ======================= -->
+<group name="sil,waf,">
+  <rule id="100300" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="transaction.client_ip" type="pcre2">.+</field>
+    <description>SIL WAF: transaction logged</description>
+  </rule>
+
+  <rule id="100301" level="8">
+    <if_sid>100300</if_sid>
+    <regex type="pcre2">"ruleId":\s*"942\d{3}"</regex>
+    <description>WAF blocked SQL injection from $(transaction.client_ip)</description>
+    <mitre><id>T1190</id></mitre>
+    <group>sil_waf_attack,attack,</group>
+  </rule>
+
+  <rule id="100302" level="8">
+    <if_sid>100300</if_sid>
+    <regex type="pcre2">"ruleId":\s*"941\d{3}"</regex>
+    <description>WAF blocked cross-site scripting from $(transaction.client_ip)</description>
+    <mitre><id>T1190</id></mitre>
+    <group>sil_waf_attack,attack,</group>
+  </rule>
+
+  <rule id="100303" level="10">
+    <if_sid>100300</if_sid>
+    <regex type="pcre2">"ruleId":\s*"10001"</regex>
+    <description>WAF blocked a national ID or phone number in a URL from $(transaction.client_ip): find and fix the calling client</description>
+    <group>sil_waf_attack,hipaa_164.312.e.1,</group>
+  </rule>
+
+  <rule id="100304" level="12" frequency="5" timeframe="120">
+    <if_matched_group>sil_waf_attack</if_matched_group>
+    <same_field>transaction.client_ip</same_field>
+    <description>Active web attack: 5+ blocked attacks from $(transaction.client_ip) in 2 minutes; consider blocking the source</description>
+    <mitre><id>T1190</id></mitre>
+  </rule>
+</group>
+
+<!-- ================ Shadow AI (egress proxy / secure web gateway log) ================ -->
+<!-- Field names: Wazuh reserves "static" fields (action, user, srcip, url, ...) that custom
+     rules can't test with <field>. The egress log is therefore mapped to non-reserved names:
+     username (not user) and verdict (not action). -->
+<group name="sil,shadow_ai,">
+  <rule id="100400" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="event">^egress$</field>
+    <description>SIL egress proxy: outbound request</description>
+  </rule>
+
+  <rule id="100401" level="8">
+    <if_sid>100400</if_sid>
+    <list field="host" lookup="match_key">etc/lists/consumer-ai-domains</list>
+    <description>Shadow AI: $(username) reached consumer AI service $(host) outside the AI gateway</description>
+    <mitre><id>T1567</id></mitre>
+    <group>sil_shadow_ai,</group>
+  </rule>
+
+  <rule id="100402" level="12">
+    <if_sid>100401</if_sid>
+    <field name="verdict">^allowed$</field>
+    <field name="bytes_out" type="pcre2">^\d{6,}$</field>
+    <description>Shadow AI: $(username) uploaded $(bytes_out) bytes to $(host): possible data exposure, check for PHI and invoke Duty to Report</description>
+    <mitre><id>T1567</id></mitre>
+    <group>sil_shadow_ai,</group>
+  </rule>
+
+  <rule id="100404" level="5">
+    <if_sid>100401</if_sid>
+    <field name="verdict">^denied$</field>
+    <description>Shadow AI: $(username) tried to reach $(host); blocked by the egress allowlist</description>
+    <group>sil_shadow_ai,</group>
+  </rule>
+
+  <rule id="100403" level="10" frequency="5" timeframe="600">
+    <if_matched_group>sil_shadow_ai</if_matched_group>
+    <same_field>username</same_field>
+    <description>Shadow AI: $(username) repeatedly using consumer AI services; talk to the user about the approved tool</description>
+  </rule>
+</group>
+
+<!-- ============== Ransomware (file integrity monitoring, syscheck events) ============== -->
+<group name="sil,ransomware,syscheck,">
+  <rule id="100500" level="12">
+    <if_sid>554</if_sid>
+    <field name="file" type="pcre2">(?i)\.(locked|encrypted|enc|crypt|crypted|lockbit|ryk|akira)$</field>
+    <description>Ransomware indicator: file with encryption extension created ($(file))</description>
+    <mitre><id>T1486</id></mitre>
+    <group>sil_ransomware,</group>
+  </rule>
+
+  <rule id="100501" level="12">
+    <if_sid>554</if_sid>
+    <field name="file" type="pcre2">(?i)/[^/]*(readme|restore|decrypt|how_to|recover)[^/]*\.(txt|html|hta)$</field>
+    <description>Ransomware indicator: ransom note created ($(file))</description>
+    <mitre><id>T1486</id></mitre>
+    <group>sil_ransomware,</group>
+  </rule>
+
+  <rule id="100502" level="12" frequency="15" timeframe="60">
+    <if_matched_sid>550</if_matched_sid>
+    <description>Mass file modification: 15+ files changed in 60 seconds (possible encryption in progress)</description>
+    <mitre><id>T1486</id></mitre>
+    <group>sil_ransomware,</group>
+  </rule>
+
+  <rule id="100503" level="12" frequency="15" timeframe="60">
+    <if_matched_sid>553</if_matched_sid>
+    <description>Mass file deletion: 15+ files deleted in 60 seconds</description>
+    <mitre><id>T1485</id></mitre>
+    <group>sil_ransomware,</group>
+  </rule>
+
+  <rule id="100504" level="15" frequency="10" timeframe="120">
+    <if_matched_sid>100500</if_matched_sid>
+    <description>RANSOMWARE ACTIVE: 10+ files encrypted in 2 minutes. Isolate the host now and start the ransomware playbook</description>
+    <mitre><id>T1486</id></mitre>
+    <group>sil_ransomware,</group>
+  </rule>
+</group>

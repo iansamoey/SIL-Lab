@@ -1,0 +1,39 @@
+# gitleaks configuration: the built-in rules plus SIL-specific ones.
+# Used by the pre-commit hook, `make scan-secrets` and CI.
+title = "SIL gitleaks config"
+
+[extend]
+useDefault = true
+
+# Database connection strings with an embedded password. The default rules miss many
+# of these, and they are the classic secret pasted into an AI assistant when debugging.
+[[rules]]
+id = "db-connection-string"
+description = "Database connection string with embedded credentials"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|mssql|sqlserver|amqp)://[^\s:@/'"]+:([^\s@/'"]{4,})@[^\s'"]+'''
+secretGroup = 1
+keywords = ["postgres", "mysql", "mariadb", "mongodb", "redis", "mssql", "sqlserver", "amqp"]
+
+# Our .env convention: *_SECRET / *_PASSWORD / *_KEY with a long random value.
+# Catches a .env file that someone force-adds despite .gitignore.
+[[rules]]
+id = "sil-env-secret"
+description = "Secret-looking value assigned to a *_SECRET, *_PASSWORD or *_KEY variable"
+regex = '''(?i)\b[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|_KEY)\s*[=:]\s*['"]?([A-Za-z0-9+/=_\-]{16,})['"]?'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["secret", "password", "passwd", "_key"]
+
+# Keycloak / OAuth client secrets in code or config
+[[rules]]
+id = "oauth-client-secret"
+description = "OAuth client secret"
+regex = '''(?i)client[_-]?secret['"]?\s*[=:]\s*['"]([A-Za-z0-9\-_.~]{16,})['"]'''
+secretGroup = 1
+keywords = ["client_secret", "client-secret", "clientsecret"]
+
+[allowlist]
+description = "Templates and generated files that intentionally contain placeholders"
+paths = [
+  '''keycloak/realm-sil\.json\.tmpl$''',   # ${PLACEHOLDER} values only, rendered from .env
+]

@@ -1,0 +1,164 @@
+# SIL API Gateway Lab
+# Traffic path: client -> WAF (ModSecurity + OWASP CRS) -> Kong -> private APIs -> Postgres
+# Only the WAF (and Keycloak, for the lab token endpoint) is reachable from the host.
+
+name: sil-gateway-lab
+
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  restart: unless-stopped
+
+networks:
+  edge:                      # WAF <-> Kong, and host access to Keycloak
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+  backend:                   # Kong <-> APIs <-> Postgres. No internet egress.
+    internal: true
+  ai-egress:                 # ai-guard <-> LLM provider. Nothing else is attached.
+    internal: true
+
+volumes:
+  pgdata:
+
+services:
+  waf:
+    # Pin to a dated tag (e.g. 4-nginx-alpine-YYYYMMDDHHMM) or digest for anything beyond the lab.
+    image: owasp/modsecurity-crs:nginx-alpine
+    <<: *hardening
+    environment:
+      BACKEND: http://kong:8000
+      PORT: "8080"
+      SSL_PORT: "8443"            # image serves a self-signed cert here
+      PARANOIA: "1"
+      BLOCKING_PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+      MODSEC_RULE_ENGINE: "On"     # set to DetectionOnly during initial tuning
+      MODSEC_AUDIT_ENGINE: "RelevantOnly"
+      MODSEC_AUDIT_LOG_FORMAT: "JSON"
+      MODSEC_AUDIT_LOG: "/var/log/waf/audit.log"
+      MODSEC_REQ_BODY_LIMIT: "131072"
+      ALLOWED_METHODS: "GET POST OPTIONS"
+      SERVER_TOKENS: "off"
+    volumes:
+      - ./waf/sil-custom-rules.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro
+      - ./logs/waf:/var/log/waf
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    networks: [edge]
+    depends_on: [kong]
+
+  kong:
+    image: kong:3.9
+    <<: *hardening
+    environment:
+      KONG_DATABASE: "off"                        # DB-less, config is version-controlled
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "127.0.0.1:8001"         # admin API never leaves the container
+      KONG_HEADERS: "off"                         # don't advertise Kong/version
+      KONG_TRUSTED_IPS: "172.28.0.0/24"           # trust X-Forwarded-For only from the WAF subnet
+      KONG_REAL_IP_HEADER: "X-Forwarded-For"
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+    volumes:
+      - ./kong/kong.yml:/kong/kong.yml:ro
+      - ./logs/kong:/var/log/kong
+    networks: [edge, backend]                     # no published ports
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]      # lab mode; production uses `start` + Postgres + TLS
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
+      KC_HOSTNAME: http://localhost:8180          # fixes the token issuer (iss) claim
+    volumes:
+      - ./keycloak/realm-sil.json:/opt/keycloak/data/import/realm-sil.json:ro
+    ports:
+      - "127.0.0.1:8180:8080"
+    networks: [edge, backend]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTGRES_DB: sil
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      CLAIMS_DB_PASSWORD: ${CLAIMS_DB_PASSWORD}
+      PATIENT_DB_PASSWORD: ${PATIENT_DB_PASSWORD}
+    command: ["postgres", "-c", "log_connections=on", "-c", "log_disconnections=on",
+              "-c", "password_encryption=scram-sha-256"]
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sil"]
+      interval: 5s
+      retries: 20
+    networks: [backend]                           # no published ports
+
+  claims-api:
+    build: { context: ./services, dockerfile: claims/Dockerfile }
+    <<: *hardening
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      DATABASE_URL: postgresql://claims_svc:${CLAIMS_DB_PASSWORD}@postgres:5432/sil
+      LAB_VULNERABLE_ENDPOINTS: ${LAB_VULNERABLE_ENDPOINTS:-false}   # Q6 demo only
+      OIDC_ISSUER: http://localhost:8180/realms/sil
+      JWKS_URL: http://keycloak:8080/realms/sil/protocol/openid-connect/certs
+      API_AUDIENCE: sil-api
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [backend]
+
+  patient-api:
+    build: { context: ./services, dockerfile: patients/Dockerfile }
+    <<: *hardening
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      DATABASE_URL: postgresql://patient_svc:${PATIENT_DB_PASSWORD}@postgres:5432/sil
+      OIDC_ISSUER: http://localhost:8180/realms/sil
+      JWKS_URL: http://keycloak:8080/realms/sil/protocol/openid-connect/certs
+      API_AUDIENCE: sil-api
+      PHI_ENC_KEY: ${PHI_ENC_KEY}
+      PHI_HMAC_KEY: ${PHI_HMAC_KEY}
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [backend]
+
+  # ---- Section 1A (e): AI guardrail gateway -----------------------------------
+  ai-guard:
+    build: { context: ./services, dockerfile: ai_guard/Dockerfile }
+    <<: *hardening
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      OIDC_ISSUER: http://localhost:8180/realms/sil
+      JWKS_URL: http://keycloak:8080/realms/sil/protocol/openid-connect/certs
+      API_AUDIENCE: sil-api
+      UPSTREAM_URL: http://mock-llm:8000/v1/chat/completions   # production: the enterprise LLM endpoint
+      ALLOWED_MODELS: enterprise-llm
+      INJECTION_THRESHOLD: "0.7"
+      AUDIT_LOG: /var/log/ai-guard/audit.json
+      HOME: /tmp
+      TLDEXTRACT_CACHE: /tmp/tldextract
+    volumes:
+      - ./logs/ai-guard:/var/log/ai-guard
+    ports:
+      - "127.0.0.1:8090:8000"      # internal tools only; not behind the public WAF
+    networks: [edge, backend, ai-egress]
+
+  mock-llm:
+    build: { context: ./services, dockerfile: mock_llm/Dockerfile }
+    <<: *hardening
+    read_only: true
+    tmpfs: [/tmp]
+    networks: [ai-egress]          # reachable only by ai-guard

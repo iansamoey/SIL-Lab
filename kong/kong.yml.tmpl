@@ -1,0 +1,116 @@
+# Kong declarative config (DB-less). Generated into kong.yml by scripts/bootstrap.py,
+# which injects Keycloak's realm public key. kong.yml itself is gitignored.
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: claims-api
+    url: http://claims-api:8000/claims
+    connect_timeout: 5000
+    read_timeout: 15000
+    write_timeout: 15000
+    retries: 0                      # never auto-retry claim submissions (not idempotent)
+    routes:
+      - name: claims-submit
+        paths: [/api/claims]
+        methods: [POST]
+        strip_path: true
+        plugins:
+          - name: acl
+            config: { allow: [hospital], hide_groups_header: true }
+          - name: rate-limiting     # stricter than the global limit for writes
+            config: { minute: 30, policy: local, limit_by: consumer, fault_tolerant: true }
+      - name: claims-read
+        paths: [/api/claims]
+        methods: [GET]
+        strip_path: true
+        plugins:
+          - name: acl
+            config: { allow: [hospital, insurer], hide_groups_header: true }
+
+  - name: patient-api
+    url: http://patient-api:8000/patients
+    connect_timeout: 5000
+    read_timeout: 15000
+    write_timeout: 15000
+    retries: 0
+    routes:
+      - name: patients
+        paths: [/api/patients]
+        methods: [GET, POST]
+        strip_path: true
+        plugins:
+          - name: acl
+            config: { allow: [hospital], hide_groups_header: true }
+
+# One Kong consumer per OAuth client. The jwt plugin maps a token to a consumer
+# using the `azp` (authorised party = client id) claim, which gives us
+# per-client ACLs and per-client rate limits.
+consumers:
+  - username: hospital-client
+    jwt_secrets:
+      - key: hospital-client
+        algorithm: RS256
+        rsa_public_key: |
+{{RSA_PUBLIC_KEY}}
+    acls:
+      - group: hospital
+
+  - username: insurer-client
+    jwt_secrets:
+      - key: insurer-client
+        algorithm: RS256
+        rsa_public_key: |
+{{RSA_PUBLIC_KEY}}
+    acls:
+      - group: insurer
+
+  # DAST scanner: its own identity, so scan traffic is attributable in logs and the SIEM,
+  # with a higher limit than partners so the scan isn't throttled into meaningless 429s.
+  - username: dast-scanner
+    jwt_secrets:
+      - key: dast-scanner
+        algorithm: RS256
+        rsa_public_key: |
+{{RSA_PUBLIC_KEY}}
+    acls:
+      - group: hospital
+      - group: insurer
+    plugins:
+      - name: rate-limiting
+        config: { minute: 1200, policy: local, limit_by: consumer, fault_tolerant: true }
+
+plugins:
+  - name: jwt
+    config:
+      key_claim_name: azp
+      claims_to_verify: [exp]
+      maximum_expiration: 3600      # reject long-lived tokens even if validly signed
+      header_names: [authorization]
+      uri_param_names: []           # never accept tokens in URLs (they leak into logs)
+      cookie_names: []
+
+  - name: rate-limiting
+    config: { minute: 60, policy: local, limit_by: consumer, fault_tolerant: true }
+
+  - name: request-size-limiting
+    config: { allowed_payload_size: 64, size_unit: kilobytes }
+
+  - name: correlation-id
+    config: { header_name: X-Request-ID, generator: uuid, echo_downstream: true }
+
+  - name: response-transformer
+    config:
+      add:
+        headers:
+          - "Cache-Control:no-store"              # PHI must not be cached by intermediaries
+          - "X-Content-Type-Options:nosniff"
+          - "Strict-Transport-Security:max-age=31536000; includeSubDomains"
+
+  - name: file-log                  # JSON access log, shipped to the SIEM (Section 1B)
+    config:
+      path: /var/log/kong/access.json
+      reopen: true
+      custom_fields_by_lua:         # strip credentials before they hit disk
+        request.headers.authorization: "return nil"
+        request.headers.cookie: "return nil"

@@ -1,0 +1,14 @@
+# Packages reviewed and approved for use. Adding a package here is a security
+# review decision: check the maintainer, repository, download history and licence.
+fastapi
+uvicorn
+httpx
+pyjwt
+cryptography
+psycopg
+pydantic
+presidio-analyzer
+presidio-anonymizer
+spacy
+en-core-web-sm
+pytest

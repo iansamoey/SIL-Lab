@@ -1,0 +1,15 @@
+chat.openai.com:openai
+chatgpt.com:openai
+api.openai.com:openai
+claude.ai:anthropic
+gemini.google.com:google
+bard.google.com:google
+copilot.microsoft.com:microsoft
+www.perplexity.ai:perplexity
+perplexity.ai:perplexity
+chat.deepseek.com:deepseek
+chat.mistral.ai:mistral
+poe.com:quora
+character.ai:character
+huggingface.co:huggingface
+you.com:you

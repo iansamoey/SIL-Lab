@@ -1,0 +1,7 @@
+# Requirements as an AI coding assistant suggested them for a new "M-Pesa
+# payments + JWT" feature. Used to demonstrate the dependency gate and OSV-Scanner.
+fastapi==0.115.6
+requests==2.25.0                # real package, but an old version with known CVEs
+fastapi-jwt-guard==1.2.0        # plausible-sounding, does not exist
+python-kenya-mpesa-sdk==0.4.1   # plausible-sounding, does not exist
+reqeusts==2.31.0                # typo of "requests"

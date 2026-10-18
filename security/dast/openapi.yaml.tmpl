@@ -1,0 +1,43 @@
+# API description for the ZAP scan. Our services don't publish OpenAPI (to avoid handing
+# attackers a map), so the scanner gets this spec privately instead.
+# Scope: read-only endpoints only. POST /api/claims is deliberately excluded so scans of a
+# shared staging environment never create data. {{...}} values are filled in by the demo.
+openapi: 3.0.3
+info: { title: SIL lab APIs (DAST scope), version: "1.0" }
+servers:
+  - url: http://kong:8000
+security: [ { bearer: [] } ]
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+paths:
+  /api/claims:
+    get:
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, example: 20 } }
+      responses: { "200": { description: Claims for the caller's organisation } }
+  /api/claims/{claim_id}:
+    get:
+      parameters:
+        - { name: claim_id, in: path, required: true, schema: { type: string, format: uuid, example: "{{CLAIM_ID}}" } }
+      responses: { "200": { description: One claim } }
+  /api/claims/by-patient/{patient_id}:
+    get:
+      parameters:
+        - { name: patient_id, in: path, required: true, schema: { type: string, format: uuid, example: "{{PATIENT_ID}}" } }
+      responses: { "200": { description: Claims for a patient } }
+  /api/patients/search:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { national_id: { type: string, example: "23456789" } }
+      responses: { "200": { description: Patient, masked identifiers } }
+  /api/patients/{patient_id}:
+    get:
+      parameters:
+        - { name: patient_id, in: path, required: true, schema: { type: string, format: uuid, example: "{{PATIENT_ID}}" } }
+      responses: { "200": { description: Patient, masked identifiers } }

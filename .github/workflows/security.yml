@@ -1,0 +1,99 @@
+# Security checks on every pull request and push to main.
+# Mirrors the pre-commit hooks (which developers can skip) and adds the slower scans.
+# Hardening for production: pin each action to a full commit SHA, not a tag.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read            # least privilege for the workflow token
+
+jobs:
+  secrets:
+    name: Secret scan (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # scan every commit, so a --no-verify bypass is still caught
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          V=8.30.1
+          base=https://github.com/gitleaks/gitleaks/releases/download/v$V
+          curl -fsSLO "$base/gitleaks_${V}_linux_x64.tar.gz"
+          curl -fsSLO "$base/gitleaks_${V}_checksums.txt"
+          grep " gitleaks_${V}_linux_x64.tar.gz\$" gitleaks_${V}_checksums.txt | sha256sum -c -
+          tar -xzf gitleaks_${V}_linux_x64.tar.gz gitleaks
+      - name: Scan
+        run: ./gitleaks git --redact --config .gitleaks.toml --report-format sarif --report-path gitleaks.sarif .
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: gitleaks-report, path: gitleaks.sarif }
+
+  dependencies:
+    name: Dependency gate + vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Dependency gate (hallucinated / typosquatted / brand-new packages)
+        run: python3 scripts/check_dependencies.py services/*/requirements.txt
+      - name: Findings for DefectDojo
+        if: always()
+        run: python3 scripts/check_dependencies.py --format defectdojo services/*/requirements.txt > dependency-gate.json || true
+      - name: OSV-Scanner (known vulnerabilities)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" ghcr.io/google/osv-scanner:v2.6.0 \
+            scan source -r /src/services --format sarif > osv.sarif
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: sca-reports, path: "*.json\nosv.sarif" }
+
+  sast:
+    name: SAST (Semgrep, SIL custom rules)
+    runs-on: ubuntu-latest
+    container: semgrep/semgrep:1.178.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Custom rules pass their own tests
+        run: semgrep --test --metrics=off security/semgrep/
+      - name: Scan (blocks on any ERROR finding)
+        run: semgrep scan --metrics=off --error --config security/semgrep/sil-rules.yaml --sarif --output semgrep.sarif services
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: semgrep-report, path: semgrep.sarif }
+
+  # DAST runs against staging after deploy, not on the PR runner. The baseline (passive)
+  # scan takes 1-2 minutes; the full active scan runs nightly on a schedule.
+  dast-staging:
+    name: DAST baseline (ZAP, staging)
+    if: github.ref == 'refs/heads/main' && vars.STAGING_URL != ''
+    needs: [secrets, dependencies, sast, tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ZAP API scan, passive only
+        env:
+          ZAP_AUTH_HEADER_VALUE: Bearer ${{ secrets.DAST_SCANNER_TOKEN }}
+        run: |
+          mkdir -p work && chmod 777 work && cp security/dast/openapi.yaml.tmpl work/openapi.yaml
+          docker run --rm -e ZAP_AUTH_HEADER_VALUE -v "$PWD/work:/zap/wrk:rw" zaproxy/zap-stable:2.17.0 \
+            zap-api-scan.py -t /zap/wrk/openapi.yaml -f openapi -O "${{ vars.STAGING_URL }}" -S \
+            -J zap-report.json -r zap-report.html
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: zap-report, path: work/zap-report.* }
+
+  tests:
+    name: Security unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r services/ai_guard/requirements.txt "psycopg[binary]==3.2.3" pytest
+      - run: pytest tests -q

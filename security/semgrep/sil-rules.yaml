@@ -1,0 +1,86 @@
+# SIL custom Semgrep rules: business-logic checks that generic rulesets can't know.
+# AI coding assistants reliably produce code that is syntactically secure (parameterised
+# SQL, validated input) but forgets *our* rules: who may see which record. Each rule here
+# encodes one such rule. Tested with `semgrep --test security/semgrep/` (see sil-rules.py).
+rules:
+  - id: sil-claims-query-missing-org-filter
+    severity: ERROR
+    languages: [python]
+    message: >-
+      Query reads from the claims table without restricting it to the caller's
+      organisation. Any authenticated client could read other organisations' claims
+      (broken object-level authorisation, OWASP API1). Use org_filter(caller) and add
+      its predicate to the WHERE clause.
+    metadata:
+      category: security
+      cwe: "CWE-639: Authorization Bypass Through User-Controlled Key"
+      owasp: "API1:2023 Broken Object Level Authorization"
+      ai_risk: AI assistants generate lookups by ID or foreign key without ownership checks
+    patterns:
+      - pattern-inside: |
+          def $FUNC(...):
+            ...
+      - pattern: $CONN.execute($SQL, ...)
+      - metavariable-regex:
+          metavariable: $SQL
+          regex: (?is).*\bFROM\s+claims\b.*
+      - pattern-not-inside: |
+          def $FUNC(...):
+            ...
+            $PRED, $VAL = org_filter(...)
+            ...
+
+  - id: sil-route-missing-auth
+    severity: ERROR
+    languages: [python]
+    message: >-
+      API route has no authentication dependency. Every route except /health must take
+      `caller: Caller = Depends(require_scope("..."))` or Depends(get_caller).
+    metadata:
+      category: security
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      ai_risk: AI assistants often scaffold new routes without the project's auth dependency
+    patterns:
+      - pattern: |
+          @$R.$M($PATH, ...)
+          def $F(...):
+            ...
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^(get|post|put|patch|delete)$
+      - pattern-not: |
+          @$R.$M($PATH, ...)
+          def $F(..., $C: $T = Depends(require_scope(...)), ...):
+            ...
+      - pattern-not: |
+          @$R.$M($PATH, ...)
+          def $F(..., $C = Depends(require_scope(...)), ...):
+            ...
+      - pattern-not: |
+          @$R.$M($PATH, ...)
+          def $F(..., $C: $T = Depends(get_caller), ...):
+            ...
+      - pattern-not: |
+          @$R.$M("/health", ...)
+          def $F(...):
+            ...
+
+  - id: sil-org-identity-from-request
+    severity: ERROR
+    languages: [python]
+    message: >-
+      The submitting organisation (provider_id) is taken from request data and written
+      to the database. The caller's own identity must come from the verified token
+      (caller.provider_id), or a client can act as another organisation. (insurer_id is
+      deliberately not covered: it is the claim's destination, chosen by the submitter.)
+    metadata:
+      category: security
+      cwe: "CWE-639: Authorization Bypass Through User-Controlled Key"
+      ai_risk: AI assistants copy every field from the request model into the INSERT
+    patterns:
+      - pattern-inside: $CONN.execute($SQL, ...)
+      - pattern: $OBJ.provider_id
+      - pattern-not: caller.provider_id
+      - metavariable-regex:
+          metavariable: $SQL
+          regex: (?is).*\b(INSERT|UPDATE)\b.*\bprovider_id\b.*

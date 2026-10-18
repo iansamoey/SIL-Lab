@@ -1,0 +1,17 @@
+# Pre-commit hooks: run on the developer's machine before every commit.
+# Install once per clone with `make hooks`. CI re-runs the same checks, because
+# hooks can be skipped with `git commit --no-verify`.
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (block secrets before they reach the repo or an AI assistant's context)
+        language: system
+        entry: gitleaks git --pre-commit --staged --redact --verbose --config .gitleaks.toml
+        pass_filenames: false
+
+      - id: dependency-gate
+        name: dependency gate (hallucinated, typosquatted or brand-new packages)
+        language: system
+        entry: python3 scripts/check_dependencies.py
+        files: (requirements[^/]*\.txt|package\.json)$

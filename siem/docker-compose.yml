@@ -1,0 +1,53 @@
+# Wazuh SIEM, lean mode: the manager only (detection engine, rules, alerts file).
+# Runs as its own stack so it can be started with or without the lab:
+#   make siem-up    make siem-down
+# Full mode (indexer + dashboard) adds ~3-4 GB of RAM; see README.
+name: sil-siem
+
+volumes:
+  fileshare:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+            # monitored "file share" for the ransomware simulation
+
+services:
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.14.8
+    container_name: sil-siem-wazuh
+    hostname: wazuh-manager
+    mem_limit: 1536m
+    ulimits:
+      nofile: { soft: 655360, hard: 655360 }
+    environment:
+      INDEXER_URL: https://wazuh.indexer:9200   # not deployed in lean mode; forwarding is disabled
+      FILEBEAT_SSL_VERIFICATION_MODE: none
+    volumes:
+      # Configuration, rules and lists: copied into /var/ossec by the image at startup
+      - ./config/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
+      - ./rules/sil_rules.xml:/wazuh-config-mount/etc/rules/sil_rules.xml:ro
+      - ./lists/consumer-ai-domains:/wazuh-config-mount/etc/lists/consumer-ai-domains:ro
+      # Log sources from the lab, read-only
+      - ../logs:/lab-logs:ro
+      - fileshare:/srv/fileshare
+      # Same named volumes as the official deployment: the image's startup
+      # script needs them to unpack Wazuh's configuration, lists and rules.
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat

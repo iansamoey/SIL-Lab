@@ -1,0 +1,8 @@
+.env
+keycloak/realm-sil.json
+kong/kong.yml
+logs/
+__pycache__/
+-e .pytest_cache/
+
+security/dast/work/
