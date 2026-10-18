@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer, RecognizerRegistry
 from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_anonymizer import AnonymizerEngine
 
 # ---------------------------------------------------------------------------
 # PII / PHI recognisers
@@ -153,6 +152,28 @@ def injection_score(text: str) -> tuple[float, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Redaction
+# ---------------------------------------------------------------------------
+
+def replace_spans(text: str, results) -> str:
+    """Replace each detected span with <ENTITY_TYPE>.
+
+    Deliberately implemented here rather than with presidio-anonymizer: that package pins
+    cryptography below 49, which blocked security fixes available only in cryptography 50.
+    Removing a dependency to unblock a patch also shrinks the attack surface. Overlapping
+    spans are resolved by keeping the earliest-starting, longest match.
+    """
+    kept, last_end = [], -1
+    for r in sorted(results, key=lambda r: (r.start, -(r.end - r.start))):
+        if r.start >= last_end:
+            kept.append(r)
+            last_end = r.end
+    for r in reversed(kept):
+        text = text[:r.start] + f"<{r.entity_type}>" + text[r.end:]
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Scanner
 # ---------------------------------------------------------------------------
 
@@ -175,7 +196,6 @@ class Finding:
 class Scanner:
     def __init__(self, analyzer: AnalyzerEngine, threshold: float = 0.5):
         self.analyzer = analyzer
-        self.anonymizer = AnonymizerEngine()
         self.threshold = threshold
         self.entities = sorted(IDENTIFIER_ENTITIES | CLINICAL_ENTITIES)
 
@@ -200,4 +220,4 @@ class Scanner:
         because de-identified clinical text is what makes the request useful."""
         text = redact_secrets(normalise(text))
         results = [r for r in self._analyse(text) if r.entity_type in IDENTIFIER_ENTITIES]
-        return self.anonymizer.anonymize(text=text, analyzer_results=results).text
+        return replace_spans(text, results)

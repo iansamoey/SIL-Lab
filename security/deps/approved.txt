@@ -8,7 +8,6 @@ cryptography
 psycopg
 pydantic
 presidio-analyzer
-presidio-anonymizer
 spacy
 en-core-web-sm
 pytest

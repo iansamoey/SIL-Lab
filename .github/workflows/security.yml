@@ -61,8 +61,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Custom rules pass their own tests
         run: semgrep --test --metrics=off security/semgrep/
+      # services/claims/ai_generated.py is the deliberately vulnerable Q6 demo endpoint (mounted
+      # only while `make demo-dast` runs). It is excluded from the blocking scan, and the next step
+      # proves the rule still catches it, so the exclusion can never hide a weakened rule.
       - name: Scan (blocks on any ERROR finding)
-        run: semgrep scan --metrics=off --error --config security/semgrep/sil-rules.yaml --sarif --output semgrep.sarif services
+        run: semgrep scan --metrics=off --error --config security/semgrep/sil-rules.yaml --exclude ai_generated.py --sarif --output semgrep.sarif services
+      - name: Positive control (the planted AI-generated flaw is still detected)
+        run: |
+          n=$(semgrep scan --metrics=off --quiet --json --config security/semgrep/sil-rules.yaml services/claims/ai_generated.py \
+              | python3 -c "import sys, json; print(len(json.load(sys.stdin)['results']))")
+          echo "findings in the planted file: $n"
+          test "$n" -ge 1
       - if: always()
         uses: actions/upload-artifact@v4
         with: { name: semgrep-report, path: semgrep.sarif }
