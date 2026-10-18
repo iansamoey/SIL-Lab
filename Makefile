@@ -38,7 +38,8 @@ scan-secrets:
 	gitleaks dir . --config .gitleaks.toml --redact --no-banner
 
 check-deps:
-	python3 scripts/check_dependencies.py services/*/requirements.txt
+	python3 scripts/check_dependencies.py services/*/requirements.in
+	python3 scripts/check_dependencies.py --no-approval-check services/*/requirements.txt
 
 scan-vulns:
 	docker run --rm -v "$(PWD):/src:ro" ghcr.io/google/osv-scanner:v2.6.0 scan source -r /src/services

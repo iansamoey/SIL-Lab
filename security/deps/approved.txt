@@ -11,3 +11,4 @@ presidio-analyzer
 spacy
 en-core-web-sm
 pytest
+psycopg-binary   # official binary distribution of psycopg 3 (name resembles psycopg2-binary)

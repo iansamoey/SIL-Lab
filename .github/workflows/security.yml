@@ -40,15 +40,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Dependency gate (hallucinated / typosquatted / brand-new packages)
-        run: python3 scripts/check_dependencies.py services/*/requirements.txt
+      - name: Dependency gate on direct dependencies (hallucinated / typosquatted / brand-new / unreviewed)
+        run: python3 scripts/check_dependencies.py services/*/requirements.in
+      - name: Dependency gate on lock files (every transitive package must exist and not be brand-new)
+        run: python3 scripts/check_dependencies.py --no-approval-check services/*/requirements.txt
       - name: Findings for DefectDojo
         if: always()
-        run: python3 scripts/check_dependencies.py --format defectdojo services/*/requirements.txt > dependency-gate.json || true
+        run: python3 scripts/check_dependencies.py --format defectdojo services/*/requirements.in > dependency-gate.json || true
+      # Readable table in the log, so a blocked developer sees exactly what to fix.
       - name: OSV-Scanner (known vulnerabilities)
         run: |
           docker run --rm -v "$PWD:/src:ro" ghcr.io/google/osv-scanner:v2.6.0 \
-            scan source -r /src/services --format sarif > osv.sarif
+            scan source -r /src/services --format table
+      - name: OSV-Scanner SARIF report (for DefectDojo)
+        if: always()
+        run: |
+          docker run --rm -v "$PWD:/src:ro" ghcr.io/google/osv-scanner:v2.6.0 \
+            scan source -r /src/services --format sarif > osv.sarif || true
       - if: always()
         uses: actions/upload-artifact@v4
         with: { name: sca-reports, path: "*.json\nosv.sarif" }
@@ -104,5 +112,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r services/ai_guard/requirements.txt "psycopg[binary]==3.2.3" pytest
+      - run: pip install --require-hashes -r services/ai_guard/requirements.txt
+      - run: pip install --require-hashes -r services/claims/requirements.txt
+      - run: pip install pytest
       - run: pytest tests -q

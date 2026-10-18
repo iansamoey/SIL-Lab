@@ -73,7 +73,9 @@ The first `make up` takes a few minutes while images download and Keycloak start
 Unit tests for the API auth and validation logic run without Docker:
 
 ```bash
-pip install -r services/ai_guard/requirements.txt "psycopg[binary]" pytest
+pip install --require-hashes -r services/ai_guard/requirements.txt
+pip install --require-hashes -r services/claims/requirements.txt
+pip install pytest
 pytest tests
 ```
 
@@ -241,6 +243,15 @@ dashboard, which need another 3-4 GB. Alerts go to `/var/ossec/logs/alerts/alert
 
 The egress proxy log stands in for a secure web gateway or DNS resolver log; in production
 that is the authoritative Shadow AI source, alongside endpoint DLP.
+
+## Dependency lock files
+
+Each service has `requirements.in` (the direct dependencies, which are the decisions a developer
+or AI assistant makes) and `requirements.txt`, a lock file pinning every package, transitive ones
+included, to an exact version with hashes. Docker builds install with `--require-hashes`, so a
+tampered or substituted package fails the build. Lock files are generated with
+`uv pip compile --generate-hashes --exclude-newer <date 14 days ago>`, which enforces the two-week
+release-age rule at resolution time rather than by manual checking.
 
 ## Lab shortcuts (and what production does instead)
 

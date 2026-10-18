@@ -16,7 +16,9 @@ Checks per dependency (PyPI for requirements*.txt, npm for package.json):
   WARN  not on the approved list                       -> needs a security review
   WARN  direct URL dependency from an unapproved host
 
-Usage: check_dependencies.py [--format text|defectdojo] FILE...
+Usage: check_dependencies.py [--format text|defectdojo] [--no-approval-check] FILE...
+Run on requirements.in (direct dependencies: full checks) and on the hashed lock files
+(requirements.txt) with --no-approval-check.
 Exit code 1 if any FAIL, so CI and pre-commit block the change. Standard library only.
 """
 import argparse
@@ -130,7 +132,8 @@ def load_approved() -> set:
             if l.split("#")[0].strip()}
 
 
-def check(dep: dict, approved: set, lookup=registry_info, now=None) -> list[tuple[str, str]]:
+def check(dep: dict, approved: set, lookup=registry_info, now=None,
+          approval_check: bool = True) -> list[tuple[str, str]]:
     now = now or datetime.now(timezone.utc)
     name, eco = normalise(dep["name"]), dep["ecosystem"]
     popular = POPULAR_PYPI if eco == "pypi" else POPULAR_NPM
@@ -140,11 +143,11 @@ def check(dep: dict, approved: set, lookup=registry_info, now=None) -> list[tupl
         host = urllib.parse.urlparse(dep["url"]).hostname or ""
         if host not in APPROVED_URL_HOSTS:
             findings.append(("WARN", f"direct URL dependency from unapproved host {host}"))
-        if name not in approved:
+        if approval_check and name not in approved:
             findings.append(("WARN", "not on the approved list: needs security review"))
         return findings
 
-    if name not in popular:
+    if name not in popular and name not in approved:   # reviewed packages are exempt
         close = sorted(p for p in popular if edit_distance(name, p) <= 2 and len(name) > 3)
         if close:
             findings.append(("FAIL", f"name is very close to popular package '{close[0]}': possible typosquat"))
@@ -167,7 +170,7 @@ def check(dep: dict, approved: set, lookup=registry_info, now=None) -> list[tupl
         elif (now - published).days < COOLDOWN_DAYS:
             findings.append(("WARN", f"version {dep['version']} published {(now - published).days} days ago "
                                      f"(cooldown {COOLDOWN_DAYS})"))
-    if name not in approved:
+    if approval_check and name not in approved:
         findings.append(("WARN", "not on the approved list: needs security review"))
     return findings
 
@@ -187,13 +190,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("files", nargs="+", type=Path)
     ap.add_argument("--format", choices=["text", "defectdojo"], default="text")
+    ap.add_argument("--no-approval-check", action="store_true",
+                    help="for lock files: transitive packages are not individual decisions")
     args = ap.parse_args()
 
     approved, results, fails = load_approved(), [], 0
     for path in args.files:
         parser = parse_package_json if path.name == "package.json" else parse_requirements
         for dep in parser(path):
-            for level, msg in check(dep, approved):
+            for level, msg in check(dep, approved, approval_check=not args.no_approval_check):
                 results.append((str(path), dep, level, msg))
                 fails += level == "FAIL"
 

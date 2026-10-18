@@ -14,4 +14,4 @@ repos:
         name: dependency gate (hallucinated, typosquatted or brand-new packages)
         language: system
         entry: python3 scripts/check_dependencies.py
-        files: (requirements[^/]*\.txt|package\.json)$
+        files: (requirements[^/]*\.(txt|in)|package\.json)$

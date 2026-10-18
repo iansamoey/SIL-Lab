@@ -74,3 +74,17 @@ def test_parses_extras_urls_and_comments(tmp_path):
     deps = list(gate.parse_requirements(f))
     assert [(d["name"], d["version"]) for d in deps] == [("uvicorn", "0.32.1"), ("en_core_web_sm", None)]
     assert deps[1]["url"].startswith("https://github.com")
+
+
+def test_approved_package_is_exempt_from_typosquat_check():
+    # psycopg-binary is legitimate but 1-2 edits from psycopg2-binary
+    assert levels(dep("psycopg-binary", "3.2.3"), {"psycopg-binary": {"3.2.3": 500}}, {"psycopg-binary"}) == []
+
+
+def test_unreviewed_lookalike_still_fails():
+    assert "FAIL" in levels(dep("psycopg-binary", "3.2.3"), {"psycopg-binary": {"3.2.3": 500}})
+
+
+def test_lock_file_mode_skips_only_the_approval_warning():
+    lookup = registry(gate_pkgs := {"sniffio": {"1.3.1": 900}})
+    assert gate.check(dep("sniffio", "1.3.1"), set(), lookup=lookup, now=NOW, approval_check=False) == []

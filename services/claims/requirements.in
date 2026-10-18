@@ -1,0 +1,8 @@
+# Direct dependencies. The pinned, hashed lock file is requirements.txt, generated with:
+#   uv pip compile requirements.in --generate-hashes --exclude-newer <14 days ago> \
+#     --python-version 3.12 --python-platform x86_64-unknown-linux-gnu -o requirements.txt
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+psycopg[binary]==3.2.3
+PyJWT[crypto]==2.15.1
+cryptography==50.0.2
