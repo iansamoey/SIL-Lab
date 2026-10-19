@@ -22,16 +22,6 @@ real credentials are committed (secrets are generated locally into a git-ignored
 **Requirements:** Docker with Compose v2, Python 3.10+, `make`, `curl` (on Windows, use WSL2).
 About 8 GB of RAM for the lab; the SIEM (`make siem-up`) runs separately in about 1.5 GB.
 
-**A note on honesty:** the SIEM section of the assessment documents a known limitation (two
-correlation rules intermittent under instantaneous event bursts) and the debugging that led to
-the final rule design. Those findings are intentional parts of the write-up, not omissions.
-
-```
-client ──► WAF (ModSecurity + OWASP CRS) ──► Kong gateway ──► Claims API ──┐
-              :8080 / :8443                  (not exposed)    Patient API ─┴─► PostgreSQL
-                                                  │                             (not exposed)
-                                     Keycloak (OAuth2 / OIDC) issues the tokens
-```
 
 | Component | Role in the lab | Production equivalent (GCP) |
 |---|---|---|
@@ -130,20 +120,6 @@ Network isolation enforces the design rather than relying on convention: `mock-l
 on its own internal network shared only with `ai-guard`, and the APIs have no internet
 route at all, so no other component can reach any LLM, enterprise or consumer.
 
-### Known limitations of the guardrails
-
-- **Heuristic injection detection is a first line only.** Paraphrased or novel attacks will
-  get past regex patterns. Production adds an ML classifier (for example LLM Guard's
-  prompt-injection scanner or Meta's Prompt Guard), and the canary check is the backstop.
-- **Indirect injection.** Instructions hidden in documents or web pages the tool feeds to the
-  model are scanned like any other text, but are harder to catch than direct attempts.
-- **Language coverage.** The NER model is English-only. Clinical notes in Kenya can include
-  Swahili and Sheng, which will reduce detection of names and clinical terms. This needs
-  testing against real (de-identified) samples and a multilingual model or custom term lists.
-- **The small spaCy model** trades accuracy for size. Production should evaluate the large
-  or transformer model against a labelled test set and track precision and recall.
-- **Redaction can break usefulness.** Some tasks genuinely need the identifiers; those belong
-  in an approved, in-boundary model rather than an exception to the policy.
 
 ## Secure AI SDLC: secret scanning and the dependency gate (Section 1B Q2)
 
